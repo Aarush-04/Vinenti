@@ -13,3 +13,11 @@ venv/
 # OS
 .DS_Store
 Thumbs.db
+
+# Node / Expo
+node_modules/
+.expo/
+dist/
+web-build/
+*.log
+npm-debug.*

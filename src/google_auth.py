@@ -16,12 +16,16 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 
-SCOPES = ["https://www.googleapis.com/auth/calendar.readonly"]
+SCOPES = [
+    "https://www.googleapis.com/auth/calendar.readonly",
+    "https://www.googleapis.com/auth/tasks.readonly",
+    "https://www.googleapis.com/auth/gmail.readonly",
+]
 TOKEN_PATH = "token.json"
 CREDENTIALS_PATH = "credentials.json"
 
 
-def get_calendar_service():
+def _get_credentials():
     creds = None
 
     if os.path.exists(TOKEN_PATH):
@@ -33,8 +37,8 @@ def get_calendar_service():
         else:
             if not os.path.exists(CREDENTIALS_PATH):
                 raise FileNotFoundError(
-                    "credentials.json not found. See README.md for how to "
-                    "download it from Google Cloud Console."
+                    "credentials.json not found. See README.md for how "
+                    "to download it from Google Cloud Console."
                 )
             flow = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_PATH, SCOPES)
             creds = flow.run_local_server(port=0)
@@ -42,10 +46,23 @@ def get_calendar_service():
         with open(TOKEN_PATH, "w") as token_file:
             token_file.write(creds.to_json())
 
-    return build("calendar", "v3", credentials=creds)
+    return creds
+
+
+def get_calendar_service():
+    return build("calendar", "v3", credentials=_get_credentials())
+
+
+def get_tasks_service():
+    return build("tasks", "v1", credentials=_get_credentials())
+
+
+def get_gmail_service():
+    return build("gmail", "v1", credentials=_get_credentials())
 
 
 if __name__ == "__main__":
-    print("Opening browser to connect your Google Calendar...")
-    get_calendar_service()
+    print("Opening browser to connect your Google account...")
+    print("(This grants access to Calendar, Tasks, and Gmail in one go.)")
+    _get_credentials()
     print("Done — token.json created. You won't need to log in again.")

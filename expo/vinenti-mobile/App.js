@@ -12,15 +12,17 @@ import {
   Platform,
 } from "react-native";
 
-// Change this to your PC's local IP address (see README_MOBILE.md).
-// Both your phone and PC must be on the same WiFi network.
-const API_BASE_URL = "http://192.168.1.100:5000";
+// Your PC's local IP — update here if your home network reassigns it.
+const API_BASE_URL = "http://192.168.2.211:5000";
 
 export default function App() {
   const [loading, setLoading] = useState(true);
   const [brief, setBrief] = useState("");
   const [githubSummary, setGithubSummary] = useState("");
   const [calendarSummary, setCalendarSummary] = useState("");
+  const [tasksSummary, setTasksSummary] = useState("");
+  const [inboxSummary, setInboxSummary] = useState("");
+  const [weatherSummary, setWeatherSummary] = useState("");
   const [error, setError] = useState(null);
 
   const [chatInput, setChatInput] = useState("");
@@ -36,6 +38,9 @@ export default function App() {
       setBrief(data.brief);
       setGithubSummary(data.github);
       setCalendarSummary(data.calendar);
+      setTasksSummary(data.tasks);
+      setInboxSummary(data.inbox);
+      setWeatherSummary(data.weather);
     } catch (e) {
       setError(
         "Couldn't reach the server. Make sure api_server.py is running " +
@@ -53,6 +58,10 @@ export default function App() {
   const sendMessage = async () => {
     if (!chatInput.trim()) return;
     const userMsg = { role: "user", text: chatInput };
+    const historyForApi = messages.map((m) => ({
+      role: m.role === "user" ? "user" : "assistant",
+      content: m.text,
+    }));
     setMessages((prev) => [...prev, userMsg]);
     setChatInput("");
     setSending(true);
@@ -60,7 +69,10 @@ export default function App() {
       const res = await fetch(`${API_BASE_URL}/api/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: userMsg.text }),
+        body: JSON.stringify({
+          message: userMsg.text,
+          history: historyForApi,
+        }),
       });
       const data = await res.json();
       setMessages((prev) => [...prev, { role: "ai", text: data.reply }]);
@@ -94,6 +106,9 @@ export default function App() {
               <View style={styles.divider} />
               <Text style={styles.meta}>GitHub: {githubSummary}</Text>
               <Text style={styles.meta}>Calendar: {calendarSummary}</Text>
+              <Text style={styles.meta}>Tasks: {tasksSummary}</Text>
+              <Text style={styles.meta}>Inbox: {inboxSummary}</Text>
+              <Text style={styles.meta}>Weather: {weatherSummary}</Text>
             </View>
           )}
 

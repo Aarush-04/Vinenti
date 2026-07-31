@@ -167,7 +167,13 @@ def get_calendar_context() -> dict:
                 label = "Tomorrow"
             else:
                 label = start_local.strftime("%a %b %d")
-            events.append({"label": label, "time": _format_12h(start_local), "summary": summary, "all_day": False})
+            events.append({
+                "label": label,
+                "time": _format_12h(start_local),
+                "summary": summary,
+                "all_day": False,
+                "html_link": event.get("htmlLink"),
+            })
 
             if start_local.date() == tomorrow_date and start_local.hour < 9:
                 if earliest_early_event is None or start_local < earliest_early_event[0]:
@@ -175,7 +181,13 @@ def get_calendar_context() -> dict:
         else:
             event_date = datetime.date.fromisoformat(start_raw)
             label = "Today" if event_date == today_date else "Tomorrow" if event_date == tomorrow_date else event_date.strftime("%a %b %d")
-            events.append({"label": label, "time": None, "summary": summary, "all_day": True})
+            events.append({
+                "label": label,
+                "time": None,
+                "summary": summary,
+                "all_day": True,
+                "html_link": event.get("htmlLink"),
+            })
 
     bedtime_advice = None
     if earliest_early_event:
@@ -198,7 +210,9 @@ def get_calendar_events() -> str:
 # Google Tasks
 # ---------------------------------------------------------------------------
 def get_tasks_context() -> dict:
-    """Returns {overdue: [...], today: [...], tomorrow: [...]}"""
+    """Returns {overdue: [...], today: [...], tomorrow: [...], text}, where
+    each task is {id, tasklist_id, title, due} so the app can edit/complete
+    them directly instead of only reading them."""
     try:
         from google_auth import get_tasks_service
     except ImportError:
@@ -222,21 +236,21 @@ def get_tasks_context() -> dict:
             if not due_str:
                 continue
             due_date = datetime.date.fromisoformat(due_str[:10])
-            title = t.get("title", "Untitled task")
+            entry = {"id": t["id"], "tasklist_id": tl["id"], "title": t.get("title", "Untitled task"), "due": due_str[:10]}
             if due_date == today_date:
-                today_tasks.append(title)
+                today_tasks.append(entry)
             elif due_date == tomorrow_date:
-                tomorrow_tasks.append(title)
+                tomorrow_tasks.append(entry)
             elif due_date < today_date:
-                overdue.append(title)
+                overdue.append(entry)
 
     parts = []
     if overdue:
-        parts.append(f"Overdue (still worth doing): {', '.join(overdue)}")
+        parts.append(f"Overdue (still worth doing): {', '.join(t['title'] for t in overdue)}")
     if today_tasks:
-        parts.append(f"Due today: {', '.join(today_tasks)}")
+        parts.append(f"Due today: {', '.join(t['title'] for t in today_tasks)}")
     if tomorrow_tasks:
-        parts.append(f"Due tomorrow: {', '.join(tomorrow_tasks)}")
+        parts.append(f"Due tomorrow: {', '.join(t['title'] for t in tomorrow_tasks)}")
     text = " | ".join(parts) if parts else "No tasks due today or tomorrow, and nothing overdue."
 
     return {"overdue": overdue, "today": today_tasks, "tomorrow": tomorrow_tasks, "text": text}
@@ -244,6 +258,26 @@ def get_tasks_context() -> dict:
 
 def get_tasks() -> str:
     return get_tasks_context()["text"]
+
+
+def add_task(title: str, due_date: str = None) -> dict:
+    """Creates a new task in the default task list. due_date, if given,
+    should be an ISO date string (YYYY-MM-DD) — defaults to today."""
+    from google_auth import get_tasks_service
+    service = get_tasks_service()
+
+    due_date = due_date or now_local().date().isoformat()
+    body = {"title": title, "due": f"{due_date}T00:00:00.000Z"}
+    result = service.tasks().insert(tasklist="@default", body=body).execute()
+    return {"id": result["id"], "title": result["title"]}
+
+
+def complete_task(tasklist_id: str, task_id: str) -> bool:
+    """Marks a task as completed."""
+    from google_auth import get_tasks_service
+    service = get_tasks_service()
+    service.tasks().patch(tasklist=tasklist_id, task=task_id, body={"status": "completed"}).execute()
+    return True
 
 
 # ---------------------------------------------------------------------------

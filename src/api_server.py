@@ -3,6 +3,7 @@ Local API server for the Vinenti companion app.
 Run with: python api_server.py
 """
 
+import re
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 
@@ -14,6 +15,8 @@ from companion import (
     get_weather_context,
     get_current_time_context,
     generate_daily_brief,
+    add_task,
+    complete_task,
     GROQ_API_KEY,
     GROQ_MODEL,
     GROQ_URL,
@@ -63,6 +66,35 @@ def brief():
     )
 
 
+@app.route("/api/tasks/add", methods=["POST"])
+def tasks_add():
+    data = request.get_json(force=True)
+    title = data.get("title", "").strip()
+    due_date = data.get("due")  # optional ISO date string
+    if not title:
+        return jsonify({"error": "title is required"}), 400
+    result = add_task(title, due_date)
+    return jsonify(result)
+
+
+@app.route("/api/tasks/complete", methods=["POST"])
+def tasks_complete():
+    data = request.get_json(force=True)
+    tasklist_id = data.get("tasklist_id")
+    task_id = data.get("task_id")
+    if not tasklist_id or not task_id:
+        return jsonify({"error": "tasklist_id and task_id are required"}), 400
+    complete_task(tasklist_id, task_id)
+    return jsonify({"completed": True})
+
+
+# The AI is asked to end its reply with this exact marker (on its own line)
+# whenever it detects the user described something they need to do — the
+# server extracts it, creates the real task, and strips the marker before
+# showing the reply to the user.
+TASK_MARKER_RE = re.compile(r"\[\[ADD_TASK:\s*(.+?)\]\]")
+
+
 @app.route("/api/chat", methods=["POST"])
 def chat():
     data = request.get_json(force=True)
@@ -101,7 +133,14 @@ def chat():
         f"Weather: {weather_ctx['text']}\n"
         f"Precomputed sleep recommendation: {sleep_line}\n\n"
         "Keep replies short and conversational, under 100 words unless the user "
-        "is asking for real detail."
+        "is asking for real detail.\n\n"
+        "IMPORTANT: if the user describes something they need to get done that "
+        "isn't already in their tasks or calendar (e.g. \"I need to email my "
+        "professor tomorrow\", \"remind me to renew my passport\"), end your reply "
+        "with a new line containing exactly: [[ADD_TASK: <short task title>]] — "
+        "using your own concise phrasing for the title. Only do this when the "
+        "user is clearly describing a new to-do, not for general questions or "
+        "small talk. Never mention this marker format to the user."
     )
 
     messages = [{"role": "system", "content": system_content}] + history
@@ -112,7 +151,20 @@ def chat():
     resp = requests.post(GROQ_URL, headers=headers, json=payload, timeout=30)
     resp.raise_for_status()
     reply = resp.json()["choices"][0]["message"]["content"]
-    return jsonify({"reply": reply})
+
+    added_task = None
+    match = TASK_MARKER_RE.search(reply)
+    if match:
+        task_title = match.group(1).strip()
+        try:
+            added_task = add_task(task_title)
+        except Exception:
+            added_task = None
+        reply = TASK_MARKER_RE.sub("", reply).strip()
+        if added_task:
+            reply += f"\n\n(Added \"{task_title}\" to your tasks.)"
+
+    return jsonify({"reply": reply, "added_task": added_task})
 
 
 @app.route("/api/health", methods=["GET"])

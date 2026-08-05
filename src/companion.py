@@ -210,33 +210,50 @@ def get_calendar_events() -> str:
 # Google Tasks
 # ---------------------------------------------------------------------------
 def get_tasks_context() -> dict:
-    """Returns {overdue: [...], today: [...], tomorrow: [...], text}, where
-    each task is {id, tasklist_id, title, due} so the app can edit/complete
-    them directly instead of only reading them."""
+    """Returns {overdue, today, tomorrow, completed_today, text}. Each task
+    is {id, tasklist_id, title, due} so the app can edit/complete them
+    directly instead of only reading them."""
     try:
         from google_auth import get_tasks_service
     except ImportError:
-        return {"overdue": [], "today": [], "tomorrow": [], "text": "Tasks module not set up yet."}
+        return {"overdue": [], "today": [], "tomorrow": [], "completed_today": [], "text": "Tasks module not set up yet."}
 
     try:
         service = get_tasks_service()
     except FileNotFoundError:
-        return {"overdue": [], "today": [], "tomorrow": [], "text": "Tasks not connected yet."}
+        return {"overdue": [], "today": [], "tomorrow": [], "completed_today": [], "text": "Tasks not connected yet."}
 
     today_date = now_local().date()
     tomorrow_date = today_date + datetime.timedelta(days=1)
 
     tasklists = service.tasklists().list().execute().get("items", [])
-    overdue, today_tasks, tomorrow_tasks = [], [], []
+    overdue, today_tasks, tomorrow_tasks, completed_today = [], [], [], []
 
     for tl in tasklists:
-        tasks = service.tasks().list(tasklist=tl["id"], showCompleted=False).execute().get("items", [])
+        tasks = (
+            service.tasks()
+            .list(tasklist=tl["id"], showCompleted=True, showHidden=True)
+            .execute()
+            .get("items", [])
+        )
         for t in tasks:
+            entry = {"id": t["id"], "tasklist_id": tl["id"], "title": t.get("title", "Untitled task")}
+
+            if t.get("status") == "completed":
+                completed_at = t.get("completed")
+                if completed_at:
+                    completed_date = datetime.datetime.fromisoformat(
+                        completed_at.replace("Z", "+00:00")
+                    ).astimezone(LOCAL_TZ).date()
+                    if completed_date == today_date:
+                        completed_today.append(entry)
+                continue
+
             due_str = t.get("due")
             if not due_str:
                 continue
             due_date = datetime.date.fromisoformat(due_str[:10])
-            entry = {"id": t["id"], "tasklist_id": tl["id"], "title": t.get("title", "Untitled task"), "due": due_str[:10]}
+            entry["due"] = due_str[:10]
             if due_date == today_date:
                 today_tasks.append(entry)
             elif due_date == tomorrow_date:
@@ -251,9 +268,17 @@ def get_tasks_context() -> dict:
         parts.append(f"Due today: {', '.join(t['title'] for t in today_tasks)}")
     if tomorrow_tasks:
         parts.append(f"Due tomorrow: {', '.join(t['title'] for t in tomorrow_tasks)}")
+    if completed_today:
+        parts.append(f"Already completed today: {', '.join(t['title'] for t in completed_today)}")
     text = " | ".join(parts) if parts else "No tasks due today or tomorrow, and nothing overdue."
 
-    return {"overdue": overdue, "today": today_tasks, "tomorrow": tomorrow_tasks, "text": text}
+    return {
+        "overdue": overdue,
+        "today": today_tasks,
+        "tomorrow": tomorrow_tasks,
+        "completed_today": completed_today,
+        "text": text,
+    }
 
 
 def get_tasks() -> str:
@@ -272,11 +297,29 @@ def add_task(title: str, due_date: str = None) -> dict:
     return {"id": result["id"], "title": result["title"]}
 
 
+def update_task_due(tasklist_id: str, task_id: str, due_date: str) -> bool:
+    """Changes an existing task's due date (ISO YYYY-MM-DD) instead of
+    creating a duplicate."""
+    from google_auth import get_tasks_service
+    service = get_tasks_service()
+    service.tasks().patch(
+        tasklist=tasklist_id, task=task_id, body={"due": f"{due_date}T00:00:00.000Z"}
+    ).execute()
+    return True
+
+
 def complete_task(tasklist_id: str, task_id: str) -> bool:
-    """Marks a task as completed."""
     from google_auth import get_tasks_service
     service = get_tasks_service()
     service.tasks().patch(tasklist=tasklist_id, task=task_id, body={"status": "completed"}).execute()
+    return True
+
+
+def uncomplete_task(tasklist_id: str, task_id: str) -> bool:
+    """Undo — marks a completed task back to needsAction."""
+    from google_auth import get_tasks_service
+    service = get_tasks_service()
+    service.tasks().patch(tasklist=tasklist_id, task=task_id, body={"status": "needsAction"}).execute()
     return True
 
 

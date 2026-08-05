@@ -16,7 +16,10 @@ from companion import (
     get_current_time_context,
     generate_daily_brief,
     add_task,
+    update_task_due,
     complete_task,
+    uncomplete_task,
+    now_local,
     GROQ_API_KEY,
     GROQ_MODEL,
     GROQ_URL,
@@ -57,6 +60,7 @@ def brief():
                 "overdue": tasks_ctx["overdue"],
                 "today": tasks_ctx["today"],
                 "tomorrow": tasks_ctx["tomorrow"],
+                "completed_today": tasks_ctx["completed_today"],
             },
             "github": {"commit_count": github_ctx["commit_count"], "commits": github_ctx["commits"]},
             "inbox": inbox_ctx["messages"],
@@ -70,11 +74,23 @@ def brief():
 def tasks_add():
     data = request.get_json(force=True)
     title = data.get("title", "").strip()
-    due_date = data.get("due")  # optional ISO date string
+    due_date = data.get("due")
     if not title:
         return jsonify({"error": "title is required"}), 400
     result = add_task(title, due_date)
     return jsonify(result)
+
+
+@app.route("/api/tasks/update", methods=["POST"])
+def tasks_update():
+    data = request.get_json(force=True)
+    tasklist_id = data.get("tasklist_id")
+    task_id = data.get("task_id")
+    due_date = data.get("due")
+    if not tasklist_id or not task_id or not due_date:
+        return jsonify({"error": "tasklist_id, task_id, and due are required"}), 400
+    update_task_due(tasklist_id, task_id, due_date)
+    return jsonify({"updated": True})
 
 
 @app.route("/api/tasks/complete", methods=["POST"])
@@ -88,11 +104,22 @@ def tasks_complete():
     return jsonify({"completed": True})
 
 
-# The AI is asked to end its reply with this exact marker (on its own line)
-# whenever it detects the user described something they need to do — the
-# server extracts it, creates the real task, and strips the marker before
-# showing the reply to the user.
-TASK_MARKER_RE = re.compile(r"\[\[ADD_TASK:\s*(.+?)\]\]")
+@app.route("/api/tasks/uncomplete", methods=["POST"])
+def tasks_uncomplete():
+    data = request.get_json(force=True)
+    tasklist_id = data.get("tasklist_id")
+    task_id = data.get("task_id")
+    if not tasklist_id or not task_id:
+        return jsonify({"error": "tasklist_id and task_id are required"}), 400
+    uncomplete_task(tasklist_id, task_id)
+    return jsonify({"uncompleted": True})
+
+
+# The AI ends its reply with one of these markers (on its own line) when it
+# detects a task action. The server executes the real action and strips
+# the marker before showing the reply.
+ADD_TASK_RE = re.compile(r"\[\[ADD_TASK:\s*(.+?)\]\]")
+UPDATE_TASK_RE = re.compile(r"\[\[UPDATE_TASK:\s*(.+?)\s*->\s*(\d{4}-\d{2}-\d{2})\]\]")
 
 
 @app.route("/api/chat", methods=["POST"])
@@ -113,6 +140,11 @@ def chat():
     bedtime_advice = calendar_ctx["bedtime_advice"]
     sleep_line = bedtime_advice if bedtime_advice else "None — do not mention sleep unless asked."
 
+    # Give the model the exact existing task titles, so it can choose to
+    # UPDATE one instead of blindly creating a duplicate.
+    all_open_tasks = tasks_ctx["overdue"] + tasks_ctx["today"] + tasks_ctx["tomorrow"]
+    existing_titles = ", ".join(f'"{t["title"]}"' for t in all_open_tasks) or "none"
+
     tone_note = {
         "encouraging": "Be warm and supportive, soften misses.",
         "balanced": "Be calm and direct, honest without harshness.",
@@ -128,19 +160,24 @@ def chat():
         f"Current local date & time: {get_current_time_context()}\n"
         f"Calendar (next 48h): {calendar_ctx['summary']}\n"
         f"Tasks: {tasks_ctx['text']}\n"
+        f"Existing open task titles (exact): {existing_titles}\n"
         f"GitHub activity (last 24h): {github_ctx['text']}\n"
         f"Recent inbox (last 24h): {inbox_ctx['text']}\n"
         f"Weather: {weather_ctx['text']}\n"
         f"Precomputed sleep recommendation: {sleep_line}\n\n"
         "Keep replies short and conversational, under 100 words unless the user "
         "is asking for real detail.\n\n"
-        "IMPORTANT: if the user describes something they need to get done that "
-        "isn't already in their tasks or calendar (e.g. \"I need to email my "
-        "professor tomorrow\", \"remind me to renew my passport\"), end your reply "
-        "with a new line containing exactly: [[ADD_TASK: <short task title>]] — "
-        "using your own concise phrasing for the title. Only do this when the "
-        "user is clearly describing a new to-do, not for general questions or "
-        "small talk. Never mention this marker format to the user."
+        "TASK ACTIONS — use exactly one of these, only when clearly warranted:\n"
+        "1. If the user describes a NEW to-do not already in the existing task "
+        "titles list, end your reply with a new line: "
+        "[[ADD_TASK: <short task title>]]\n"
+        "2. If the user is correcting or rescheduling a task that's already in "
+        "the existing task titles list (e.g. \"fix that\", \"move it to "
+        "tomorrow\", \"that should be due Aug 1st\"), do NOT create a new task — "
+        "instead end your reply with: "
+        "[[UPDATE_TASK: <exact existing title> -> <YYYY-MM-DD>]]\n"
+        "Use the current date given above to resolve relative dates like "
+        "\"tomorrow\" correctly. Never mention these marker formats to the user."
     )
 
     messages = [{"role": "system", "content": system_content}] + history
@@ -152,19 +189,42 @@ def chat():
     resp.raise_for_status()
     reply = resp.json()["choices"][0]["message"]["content"]
 
-    added_task = None
-    match = TASK_MARKER_RE.search(reply)
-    if match:
-        task_title = match.group(1).strip()
-        try:
-            added_task = add_task(task_title)
-        except Exception:
-            added_task = None
-        reply = TASK_MARKER_RE.sub("", reply).strip()
-        if added_task:
-            reply += f"\n\n(Added \"{task_title}\" to your tasks.)"
+    action_note = None
 
-    return jsonify({"reply": reply, "added_task": added_task})
+    update_match = UPDATE_TASK_RE.search(reply)
+    add_match = ADD_TASK_RE.search(reply)
+
+    if update_match:
+        old_title, new_due = update_match.group(1).strip(), update_match.group(2).strip()
+        target = next(
+            (t for t in all_open_tasks if t["title"].strip().lower() == old_title.lower()), None
+        )
+        if not target:
+            # loose fallback match if exact match fails
+            target = next(
+                (t for t in all_open_tasks if old_title.lower() in t["title"].lower()), None
+            )
+        if target:
+            try:
+                update_task_due(target["tasklist_id"], target["id"], new_due)
+                action_note = f'(Rescheduled "{target["title"]}" to {new_due}.)'
+            except Exception:
+                action_note = None
+        reply = UPDATE_TASK_RE.sub("", reply).strip()
+
+    elif add_match:
+        task_title = add_match.group(1).strip()
+        try:
+            add_task(task_title)
+            action_note = f'(Added "{task_title}" to your tasks.)'
+        except Exception:
+            action_note = None
+        reply = ADD_TASK_RE.sub("", reply).strip()
+
+    if action_note:
+        reply += f"\n\n{action_note}"
+
+    return jsonify({"reply": reply})
 
 
 @app.route("/api/health", methods=["GET"])

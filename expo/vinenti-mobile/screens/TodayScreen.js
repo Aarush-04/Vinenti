@@ -56,6 +56,19 @@ function TaskChip({ task, variant, onComplete }) {
   );
 }
 
+function CompletedRow({ task, onUndo }) {
+  return (
+    <View style={styles.completedRow}>
+      <Text style={styles.completedText} numberOfLines={1}>
+        {task.title}
+      </Text>
+      <TouchableOpacity onPress={() => onUndo(task)}>
+        <Text style={styles.undoLink}>Undo</Text>
+      </TouchableOpacity>
+    </View>
+  );
+}
+
 export default function TodayScreen() {
   const { preferences, loaded } = usePreferences();
   const [loading, setLoading] = useState(true);
@@ -95,6 +108,19 @@ export default function TodayScreen() {
       fetchBrief();
     } catch (e) {
       // silent fail is fine here — user can just retry the tap
+    }
+  };
+
+  const handleUndo = async (task) => {
+    try {
+      await fetch(`${API_BASE_URL}/api/tasks/uncomplete`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tasklist_id: task.tasklist_id, task_id: task.id }),
+      });
+      fetchBrief();
+    } catch (e) {
+      // silent fail — user can retry
     }
   };
 
@@ -155,7 +181,8 @@ export default function TodayScreen() {
 
             {(data.tasks?.overdue.length > 0 ||
               data.tasks?.today.length > 0 ||
-              data.tasks?.tomorrow.length > 0) && (
+              data.tasks?.tomorrow.length > 0 ||
+              data.tasks?.completed_today?.length > 0) && (
               <View style={styles.section}>
                 <Eyebrow>Tasks</Eyebrow>
                 <View style={styles.chipRow}>
@@ -173,6 +200,15 @@ export default function TodayScreen() {
                   <Text style={styles.addTaskLink}>+ Add a task</Text>
                 </TouchableOpacity>
                 <Text style={styles.footnote}>Tap ✓ to mark a task complete.</Text>
+
+                {data.tasks?.completed_today?.length > 0 && (
+                  <View style={{ marginTop: 16 }}>
+                    <Text style={styles.completedHeader}>Completed today</Text>
+                    {data.tasks.completed_today.map((t) => (
+                      <CompletedRow key={t.id} task={t} onUndo={handleUndo} />
+                    ))}
+                  </View>
+                )}
                 <View style={styles.hairline} />
               </View>
             )}
@@ -278,6 +314,10 @@ const styles = StyleSheet.create({
 
   addTaskLink: { fontFamily: "Manrope_600SemiBold", color: COLORS.ember, fontSize: 13, marginTop: 12 },
   footnote: { fontFamily: "Manrope_400Regular", color: COLORS.muted, fontSize: 11, marginTop: 10, fontStyle: "italic" },
+  completedHeader: { fontFamily: "Manrope_700Bold", color: COLORS.muted, fontSize: 10, letterSpacing: 1.5, textTransform: "uppercase", marginBottom: 8 },
+  completedRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingVertical: 6 },
+  completedText: { fontFamily: "Manrope_400Regular", color: COLORS.muted, fontSize: 13, textDecorationLine: "line-through", flex: 1, marginRight: 12 },
+  undoLink: { fontFamily: "Manrope_600SemiBold", color: COLORS.ember, fontSize: 12 },
 
   metaLine: { fontFamily: "Manrope_400Regular", color: COLORS.parchment, fontSize: 14, marginBottom: 6 },
   mono: { fontFamily: "IBMPlexMono_400Regular", color: COLORS.muted, fontSize: 11, marginBottom: 4 },
